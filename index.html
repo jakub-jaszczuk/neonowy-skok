@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neonowy Skok 3D</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #111;
+            user-select: none;
+        }
+
+        #game-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #00ffcc;
+            text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+        }
+
+        #score {
+            font-size: 40px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+
+        #instructions {
+            margin-top: 5px;
+            font-size: 14px;
+            opacity: 0.7;
+        }
+
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+            z-index: 20;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 40px;
+            border-radius: 10px;
+            border: 2px solid #ff0055;
+            box-shadow: 0 0 30px rgba(255, 0, 85, 0.4);
+        }
+
+        #game-over h2 {
+            font-size: 48px;
+            margin: 0 0 20px 0;
+            color: #ff0055;
+        }
+
+        button {
+            background: #00ffcc;
+            border: none;
+            padding: 15px 30px;
+            font-size: 20px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: transform 0.2s;
+            pointer-events: auto;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+            background: #fff;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>Neonowy Skok</h1>
+        <div id="instructions">WSAD - Ruch | SPACJA - Skok | Mysz - Obrót kamery</div>
+        <div id="score">Wysokość: 0</div>
+    </div>
+
+    <div id="game-over">
+        <h2>KONIEC GRY</h2>
+        <p id="final-score">Osiągnięta wysokość: 0</p>
+        <button onclick="resetGame()">Zagraj ponownie</button>
+    </div>
+
+    <div id="game-container"></div>
+
+    <!-- Import Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- ZMIENNE GLOBALNE ---
+        let scene, camera, renderer;
+        let player;
+        let platforms = [];
+        let keys = { w: false, s: false, a: false, d: false, space: false };
+        let playerVelocity = new THREE.Vector3(0, 0, 0);
+        let canJump = false;
+        let score = 0;
+        let gameActive = true;
+        let highestY = 0;
+        
+        // Zmienne kamery
+        let cameraAngle = 0;
+        let isDragging = false;
+        let previousMouseX = 0;
+
+        // Stałe konfiguracyjne
+        const GRAVITY = 0.015;
+        const JUMP_FORCE = 0.45;
+        const MOVE_SPEED = 0.15;
+        const FRICTION = 0.85;
+        const PLAYER_SIZE = 1;
+        const PLATFORM_COUNT = 100; // Ilość platform generowanych na raz
+
+        // --- INICJALIZACJA ---
+        function init() {
+            // Scena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+            scene.fog = new THREE.FogExp2(0x1a1a2e, 0.035);
+
+            // Kamera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('game-container').appendChild(renderer.domElement);
+
+            // Światła
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.left = -20;
+            dirLight.shadow.camera.right = 20;
+            dirLight.shadow.camera.top = 20;
+            dirLight.shadow.camera.bottom = -20;
+            scene.add(dirLight);
+
+            // Gracz (Kwadrat/Sześcian)
+            createPlayer();
+
+            // Platformy
+            generatePlatforms();
+
+            // Listenery klawiszy
+            document.addEventListener('keydown', (e) => onKey(e, true));
+            document.addEventListener('keyup', (e) => onKey(e, false));
+            
+            // Listenery myszy
+            document.addEventListener('mousedown', onMouseDown);
+            document.addEventListener('mouseup', onMouseUp);
+            document.addEventListener('mousemove', onMouseMove);
+            
+            window.addEventListener('resize', onWindowResize);
+
+            // Start pętli
+            animate();
+        }
+
+        // --- OBSŁUGA MYSZY ---
+        function onMouseDown(event) {
+            isDragging = true;
+            previousMouseX = event.clientX;
+        }
+
+        function onMouseUp(event) {
+            isDragging = false;
+        }
+
+        function onMouseMove(event) {
+            if (isDragging) {
+                const deltaX = event.clientX - previousMouseX;
+                cameraAngle -= deltaX * 0.005; // Czułość obrotu
+                previousMouseX = event.clientX;
+            }
+        }
+
+        function createPlayer() {
+            const geometry = new THREE.BoxGeometry(PLAYER_SIZE, PLAYER_SIZE, PLAYER_SIZE);
+            const material = new THREE.MeshPhongMaterial({ 
+                color: 0x00ffcc,
+                emissive: 0x004444,
+                shininess: 30
+            });
+            player = new THREE.Mesh(geometry, material);
+            player.position.y = 2;
+            player.castShadow = true;
+            player.receiveShadow = true;
+            scene.add(player);
+        }
+
+        function generatePlatforms() {
+            // Platforma startowa (duża)
+            createPlatform(0, 0, 0, 10, 10, 0x333333);
+
+            // Generowanie platform w górę
+            let lastX = 0;
+            let lastY = 0;
+            let lastZ = 0;
+
+            for (let i = 0; i < PLATFORM_COUNT; i++) {
+                // Losowa pozycja względem poprzedniej
+                // Im wyżej, tym trudniej (większe odstępy)
+                const difficultyMultiplier = 1 + (i * 0.01);
+                
+                lastY += 1.5 + Math.random() * 1.5; // Wysokość skoku
+                
+                // Losowy kąt i dystans dla kolejnej platformy (spiralny układ lub losowy)
+                const angle = Math.random() * Math.PI * 2;
+                const distance = 2 + Math.random() * 3 * difficultyMultiplier; // Dystans poziomy
+
+                lastX += Math.cos(angle) * distance;
+                lastZ += Math.sin(angle) * distance;
+
+                // Ograniczenie żeby nie uciekło za daleko od środka (opcjonalne, ale pomaga kamerze)
+                // Tu pozwalamy na swobodę, ale można dodać clamp
+                
+                const width = 2 + Math.random() * 2;
+                const depth = 2 + Math.random() * 2;
+
+                // Kolor zależny od wysokości
+                const hue = (i * 5) % 360;
+                const color = new THREE.Color(`hsl(${hue}, 70%, 50%)`);
+
+                createPlatform(lastX, lastY, lastZ, width, depth, color);
+            }
+        }
+
+        function createPlatform(x, y, z, w, d, color) {
+            const geometry = new THREE.BoxGeometry(w, 0.5, d);
+            const material = new THREE.MeshPhongMaterial({ color: color });
+            const platform = new THREE.Mesh(geometry, material);
+            
+            platform.position.set(x, y, z);
+            platform.receiveShadow = true;
+            
+            // Dodajemy bounding box dla łatwiejszej detekcji kolizji
+            platform.userData = {
+                width: w,
+                depth: d,
+                topY: y + 0.25 // y center + half height
+            };
+
+            scene.add(platform);
+            platforms.push(platform);
+        }
+
+        function onKey(event, pressed) {
+            const code = event.code;
+            switch(code) {
+                case 'KeyW': keys.w = pressed; break;
+                case 'KeyS': keys.s = pressed; break;
+                case 'KeyA': keys.a = pressed; break;
+                case 'KeyD': keys.d = pressed; break;
+                case 'Space': keys.space = pressed; break;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updatePhysics() {
+            if (!gameActive) return;
+
+            // Obliczamy wektory ruchu relatywnie do kąta kamery
+            
+            // Wektor "do przodu" (zignoruj Y) - kamera patrzy w kierunku środka
+            const forwardX = -Math.sin(cameraAngle);
+            const forwardZ = -Math.cos(cameraAngle);
+            
+            // Wektor "w prawo" - naprawiony (wcześniej był odwrócony)
+            // Wynika z iloczynu wektorowego Forward x Up
+            const rightX = Math.cos(cameraAngle);
+            const rightZ = -Math.sin(cameraAngle);
+
+            let inputZ = 0; // Przód/Tył
+            let inputX = 0; // Lewo/Prawo
+
+            if (keys.w) inputZ += 1; // Do przodu
+            if (keys.s) inputZ -= 1; // Do tyłu
+            if (keys.a) inputX -= 1; // W lewo
+            if (keys.d) inputX += 1; // W prawo
+
+            // Aplikujemy siłę ruchu
+            if (inputZ !== 0 || inputX !== 0) {
+                // Składamy wektory
+                const moveX = (forwardX * inputZ + rightX * inputX) * MOVE_SPEED * 0.1;
+                const moveZ = (forwardZ * inputZ + rightZ * inputX) * MOVE_SPEED * 0.1;
+
+                playerVelocity.x += moveX;
+                playerVelocity.z += moveZ;
+
+                // Obróć gracza w stronę ruchu (opcjonalne, ale wygląda lepiej)
+                // Obliczamy kąt ruchu
+                const moveAngle = Math.atan2(playerVelocity.x, playerVelocity.z);
+                player.rotation.y = moveAngle;
+            }
+
+            // Tarcie (zatrzymywanie się)
+            playerVelocity.x *= FRICTION;
+            playerVelocity.z *= FRICTION;
+
+            // Grawitacja
+            playerVelocity.y -= GRAVITY;
+
+            // Aplikowanie prędkości
+            player.position.x += playerVelocity.x;
+            player.position.y += playerVelocity.y;
+            player.position.z += playerVelocity.z;
+
+            // Skakanie
+            if (keys.space && canJump) {
+                playerVelocity.y = JUMP_FORCE;
+                canJump = false;
+            }
+
+            // Kolizja z platformami
+            checkCollisions();
+
+            // Warunek przegranej (spadnięcie poniżej aktualnego poziomu - bezpieczny margines)
+            if (player.position.y < highestY - 15) {
+                endGame();
+            }
+
+            // Aktualizacja wyniku
+            if (player.position.y > highestY) {
+                highestY = player.position.y;
+                score = Math.floor(highestY * 10);
+                document.getElementById('score').innerText = `Wysokość: ${score}`;
+            }
+        }
+
+        function checkCollisions() {
+            canJump = false; // Reset, sprawdzamy czy dotykamy czegokolwiek
+
+            const playerBottom = player.position.y - (PLAYER_SIZE / 2);
+            const playerFeetX = player.position.x;
+            const playerFeetZ = player.position.z;
+
+            // Sprawdzamy każdą platformę
+            // Optymalizacja: w dużej grze użylibyśmy Octree, tu wystarczy pętla
+            for (let platform of platforms) {
+                const pData = platform.userData;
+                const pX = platform.position.x;
+                const pZ = platform.position.z;
+
+                // Sprawdź czy gracz jest nad platformą w poziomie
+                const withinX = Math.abs(playerFeetX - pX) < (pData.width / 2) + (PLAYER_SIZE / 2) - 0.1;
+                const withinZ = Math.abs(playerFeetZ - pZ) < (pData.depth / 2) + (PLAYER_SIZE / 2) - 0.1;
+
+                if (withinX && withinZ) {
+                    // Sprawdź czy stopy gracza są blisko góry platformy i czy spada
+                    if (playerVelocity.y <= 0 && 
+                        playerBottom <= pData.topY && 
+                        playerBottom > pData.topY - 0.5) { // 0.5 to margines przenikania
+                        
+                        // Kolizja wykryta - lądowanie
+                        playerVelocity.y = 0;
+                        player.position.y = pData.topY + (PLAYER_SIZE / 2);
+                        canJump = true;
+                    }
+                }
+            }
+        }
+
+        function updateCamera() {
+            // Kamera krąży wokół gracza na podstawie cameraAngle
+            const radius = 15; // Odległość kamery od gracza
+            const heightOffset = 6; // Wysokość kamery nad graczem
+
+            // Obliczamy offset na okręgu
+            const offsetX = Math.sin(cameraAngle) * radius;
+            const offsetZ = Math.cos(cameraAngle) * radius;
+
+            const targetPos = new THREE.Vector3(
+                player.position.x + offsetX, 
+                player.position.y + heightOffset, 
+                player.position.z + offsetZ
+            );
+            
+            // Płynne podążanie (lerp)
+            camera.position.lerp(targetPos, 0.1);
+            camera.lookAt(player.position);
+        }
+
+        function endGame() {
+            gameActive = false;
+            document.getElementById('game-over').style.display = 'block';
+            document.getElementById('final-score').innerText = `Osiągnięta wysokość: ${score}`;
+        }
+
+        // Globalna funkcja dla przycisku HTML
+        window.resetGame = function() {
+            // Reset pozycji
+            player.position.set(0, 2, 0);
+            playerVelocity.set(0, 0, 0);
+            highestY = 0;
+            score = 0;
+            document.getElementById('score').innerText = `Wysokość: 0`;
+            
+            // Nowe platformy
+            platforms.forEach(p => scene.remove(p));
+            platforms = [];
+            generatePlatforms();
+
+            // Reset UI
+            document.getElementById('game-over').style.display = 'none';
+            gameActive = true;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            updatePhysics();
+            updateCamera();
+            
+            // Animacja platform (opcjonalny efekt wizualny - delikatne unoszenie)
+            // platforms.forEach((p, idx) => { if(idx>0) p.position.y += Math.sin(Date.now()*0.001 + idx)*0.002; });
+
+            renderer.render(scene, camera);
+        }
+
+        // Uruchomienie
+        init();
+
+    </script>
+</body>
+</html>
